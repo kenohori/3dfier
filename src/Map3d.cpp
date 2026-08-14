@@ -35,6 +35,12 @@
 #include "Map3d.h"
 #include <ogrsf_frmts.h>
 
+#include <pdal/StageFactory.hpp>
+#include <pdal/PointView.hpp>
+#include <pdal/PointTable.hpp>
+#include <pdal/Options.hpp>
+#include <pdal/Stage.hpp>
+
 Map3d::Map3d() {
   OGRRegisterAll();
   _building_heightref_roof = 0.9;
@@ -677,16 +683,16 @@ const std::vector<TopoFeature*>& Map3d::get_polygons3d() {
  * search rtrees for intersecting features
  * check if points classification is allowed for feature and add point to feature
  */
-void Map3d::add_elevation_point(LASpoint const& laspt) {
+void Map3d::add_elevation_point(double px, double py, double pz, int classification, int return_number, int number_of_returns) {
   //-- only process last returns; 
   //-- although perhaps not smart for vegetation/forest in the future
   //-- TODO: always ignore the non-last-return points?
-  if (laspt.return_number != laspt.number_of_returns)
+  if (return_number != number_of_returns)
     return;
 
   std::vector<PairIndexed> re;
-  float x = laspt.get_x();
-  float y = laspt.get_y();
+  float x = px;
+  float y = py;
   Point2 minp(x - _radius_vertex_elevation, y - _radius_vertex_elevation);
   Point2 maxp(x + _radius_vertex_elevation, y + _radius_vertex_elevation);
   Box2 querybox(minp, maxp);
@@ -700,7 +706,7 @@ void Map3d::add_elevation_point(LASpoint const& laspt) {
     TopoFeature* f = v.second;
     float radius = _radius_vertex_elevation;
 
-    int c = (int)laspt.classification;
+    int c = classification;
     bool bInsert = false;
     bool bWithin = false;
     if (f->get_class() == BUILDING) {
@@ -763,7 +769,7 @@ void Map3d::add_elevation_point(LASpoint const& laspt) {
     }
     if (bInsert == true) { //-- only insert if in the allowed LAS classes
       Point2 p(x, y);
-      f->add_elevation_point(p, laspt.get_z(), radius, c, bWithin);
+      f->add_elevation_point(p, pz, radius, c, bWithin);
     }
   }
 }
@@ -1159,55 +1165,70 @@ void Map3d::extract_feature(OGRFeature *f, std::string layername, const char *id
 bool Map3d::add_las_file(PointFile pointFile) {
   std::clog << "Reading LAS/LAZ file: " << pointFile.filename << std::endl;
 
-  LASreadOpener lasreadopener;
-  lasreadopener.set_file_name(pointFile.filename.c_str());
-  //-- set to compute bounding box
-  lasreadopener.set_populate_header(true);
-  LASreader* lasreader = lasreadopener.open();
+  pdal::Options las_opts;
+  las_opts.add("filename", pointFile.filename);
+
+  pdal::StageFactory factory;
+  pdal::Stage* reader = factory.createStage("readers.las");
+  if (reader == nullptr) {
+    std::cerr << "\tERROR: could not create LAS/LAZ reader" << std::endl;
+    return false;
+  }
+  reader->setOptions(las_opts);
 
   try {
-    //-- check if file is open
-    if (lasreader == 0) {
-      std::cerr << "\tERROR: could not open file: " << pointFile.filename << std::endl;
-      return false;
+    pdal::PointTable table;
+    reader->prepare(table);
+    pdal::PointViewSet viewSet = reader->execute(table);
+
+    //-- LAS classes to omit
+    std::vector<int> lasomits;
+    for (int i : pointFile.lasomits) {
+      lasomits.push_back(i);
     }
-    LASheader header = lasreader->header;
 
-    if (check_bounds(header.min_x, header.max_x, header.min_y, header.max_y)) {
-      //-- LAS classes to omit
-      std::vector<int> lasomits;
-      for (int i : pointFile.lasomits) {
-        lasomits.push_back(i);
-      }
+    //-- read each point 1-by-1
+    uint32_t pointCount = 0;
+    for (auto& view : viewSet)
+      pointCount += view->size();
 
-      //-- read each point 1-by-1
-      uint32_t pointCount = header.number_of_point_records;
+    if (pointCount == 0) {
+      std::clog << "\tno points in the file\n";
+      return true;
+    }
 
-      std::clog << "\t(" << boost::locale::as::number << pointCount << " points in the file)\n";
-      if ((pointFile.thinning > 1)) {
-        std::clog << "\t(skipping every " << pointFile.thinning << "th points, thus ";
-        std::clog << boost::locale::as::number << (pointCount / pointFile.thinning) << " are used)\n";
-      }
-      else
-        std::clog << "\t(all points used, no skipping)\n";
+    std::clog << "\t(" << boost::locale::as::number << pointCount << " points in the file)\n";
+    if ((pointFile.thinning > 1)) {
+      std::clog << "\t(skipping every " << pointFile.thinning << "th points, thus ";
+      std::clog << boost::locale::as::number << (pointCount / pointFile.thinning) << " are used)\n";
+    }
+    else
+      std::clog << "\t(all points used, no skipping)\n";
 
-      if (pointFile.lasomits.empty() == false) {
-        std::clog << "\t(omitting LAS classes: ";
-        for (int i : pointFile.lasomits)
-          std::clog << i << " ";
-        std::clog << ")\n";
-      }
-      printProgressBar(0);
-      int i = 0;
-      while (lasreader->read_point()) {
-        LASpoint const& p = lasreader->point;
+    if (pointFile.lasomits.empty() == false) {
+      std::clog << "\t(omitting LAS classes: ";
+      for (int i : pointFile.lasomits)
+        std::clog << i << " ";
+      std::clog << ")\n";
+    }
+
+    printProgressBar(0);
+    int i = 0;
+    for (auto& view : viewSet) {
+      for (uint32_t j = 0; j < view->size(); ++j) {
         //-- set the thinning filter
         if (i % pointFile.thinning == 0) {
+          double x = view->getFieldAs<double>(pdal::Dimension::Id::X, j);
+          double y = view->getFieldAs<double>(pdal::Dimension::Id::Y, j);
+          double z = view->getFieldAs<double>(pdal::Dimension::Id::Z, j);
+          int classification = view->getFieldAs<int>(pdal::Dimension::Id::Classification, j);
+          int return_number = view->getFieldAs<int>(pdal::Dimension::Id::ReturnNumber, j);
+          int number_of_returns = view->getFieldAs<int>(pdal::Dimension::Id::NumberOfReturns, j);
           //-- set the classification filter
-          if (std::find(lasomits.begin(), lasomits.end(), (int)p.classification) == lasomits.end()) {
+          if (std::find(lasomits.begin(), lasomits.end(), classification) == lasomits.end()) {
             //-- set the bounds filter
-            if (check_bounds(p.X, p.X, p.Y, p.Y)) {
-              this->add_elevation_point(p);
+            if (check_bounds(x, x, y, y)) {
+              this->add_elevation_point(x, y, z, classification, return_number, number_of_returns);
             }
           }
         }
@@ -1215,17 +1236,12 @@ bool Map3d::add_las_file(PointFile pointFile) {
           printProgressBar(100 * (i / double(pointCount)));
         i++;
       }
-      printProgressBar(100);
-      std::clog << std::endl;
     }
-    else {
-      std::clog << "\tskipping file, bounds do not intersect polygon extent\n";
-    }
-    lasreader->close();
+    printProgressBar(100);
+    std::clog << std::endl;
   }
-  catch (std::exception e) {
+  catch (std::exception& e) {
     std::cerr << std::endl << e.what() << std::endl;
-    lasreader->close();
     return false;
   }
   return true;

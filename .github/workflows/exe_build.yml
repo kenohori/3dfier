@@ -1,37 +1,145 @@
-# This is a basic workflow to help you get started with Actions
+# Builds 3dfier binaries for Windows, macOS and Linux.
+# Binaries are uploaded as build artifacts on every run and attached to
+# GitHub releases when a release is published.
 
-name: CI
+name: Build binaries
 
-# Controls when the action will run. Triggers the workflow on push or pull request
-# events but only for the master branch
 on:
   push:
     branches: [ master, development ]
+  release:
+    types: [ published ]
+  workflow_dispatch:
 
-# A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
-  Windows-build:
-    name: Build Windows
+  linux:
+    name: Linux (x64)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake g++ make patchelf \
+            libboost-program-options-dev libboost-filesystem-dev \
+            libboost-locale-dev libboost-chrono-dev \
+            libcgal-dev libgdal-dev libpdal-dev libyaml-cpp-dev
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --parallel 2
+
+      - name: Package
+        run: |
+          mkdir -p dist/3dfier-linux-x64/lib
+          cp build/3dfier dist/3dfier-linux-x64/
+          for lib in $(ldd build/3dfier | awk '/=> \//{print $3}'); do
+            cp -L "$lib" dist/3dfier-linux-x64/lib/ 2>/dev/null || true
+          done
+          patchelf --force-rpath --set-rpath '$ORIGIN/lib' dist/3dfier-linux-x64/3dfier
+          cd dist && tar -czf 3dfier-linux-x64.tar.gz 3dfier-linux-x64
+
+      - name: Smoke test
+        run: |
+          dist/3dfier-linux-x64/3dfier --version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: 3dfier-linux-x64
+          path: dist/3dfier-linux-x64.tar.gz
+
+  macos:
+    name: macOS (${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            arch: arm64
+          - os: macos-13
+            arch: x86_64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          brew install boost cgal gdal pdal yaml-cpp dylibbundler
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --parallel 4
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          ./resources/package_macos.sh build/3dfier dist
+
+      - name: Smoke test
+        run: |
+          dist/3dfier-*-macos/bin/3dfier --version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: 3dfier-macos-${{ matrix.arch }}
+          path: dist/3dfier-*-macos-*.tar.gz
+
+  windows:
+    name: Windows (x64)
     runs-on: windows-latest
     env:
       VCPKG_DEFAULT_TRIPLET: x64-windows
       VCPKG_INSTALLATION_ROOT: C:\vcpkg
       VCPKG_FEATURE_FLAGS: manifests
     steps:
-    - uses: actions/checkout@v2
-    - name: Build
-      run: |
-        vcpkg install
-        mkdir Release
-        cd Release
-        cmake .. -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT\scripts\buildsystems\vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows -DCMAKE_INSTALL_PREFIX=C:\Software -DCMAKE_PREFIX_PATH=Release\vcpkg_installed\x64-windows\share\lastools
-        cmake --build . --parallel 4 --config Release
-    - name: Package binary files
-      run: |
-        cd Release
-        7z a 3dfier-win64.zip .\Release\*
-    - name: Upload binary files as artifact
-      uses: actions/upload-artifact@master
-      with:
-        name: 3dfier-win64
-        path: Release/3dfier-win64.zip
+      - uses: actions/checkout@v4
+
+      - name: Configure and build
+        run: |
+          vcpkg install
+          cmake -S . -B build `
+            -DCMAKE_TOOLCHAIN_FILE="C:\vcpkg\scripts\buildsystems\vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows `
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --config Release --parallel 4
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist\3dfier-windows-x64
+          Copy-Item build\Release\3dfier.exe dist\3dfier-windows-x64\
+          Copy-Item build\vcpkg_installed\x64-windows\bin\*.dll `
+            dist\3dfier-windows-x64\ -ErrorAction SilentlyContinue
+          Compress-Archive -Path dist\3dfier-windows-x64 -DestinationPath dist\3dfier-windows-x64.zip
+
+      - name: Smoke test
+        shell: pwsh
+        run: |
+          & .\dist\3dfier-windows-x64\3dfier.exe --version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: 3dfier-windows-x64
+          path: dist/3dfier-windows-x64.zip
+
+  release:
+    name: Upload binaries to release
+    if: github.event_name == 'release'
+    needs: [ linux, macos, windows ]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Upload binaries
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
