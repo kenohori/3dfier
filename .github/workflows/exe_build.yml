@@ -94,49 +94,55 @@ jobs:
   windows:
     name: Windows (x64)
     runs-on: windows-latest
-    env:
-      VCPKG_DEFAULT_TRIPLET: x64-windows
-      VCPKG_INSTALLATION_ROOT: C:\vcpkg
-      VCPKG_FEATURE_FLAGS: manifests
-      VCPKG_CACHE_DIR: D:\a\_temp\vcpkg-archives
+    defaults:
+      run:
+        shell: pwsh
     steps:
       - uses: actions/checkout@v4
 
-      - name: Update vcpkg
-        shell: pwsh
-        run: |
-          git -C C:\vcpkg fetch origin master --quiet
-          git -C C:\vcpkg reset --hard origin/master --quiet
-          C:\vcpkg\vcpkg.exe version
-
-      - name: Cache vcpkg binaries
-        uses: actions/cache@v4
+      - name: Setup conda
+        uses: conda-incubator/setup-miniconda@v3
         with:
-          path: ${{ runner.temp }}/vcpkg-archives
-          key: vcpkg-${{ hashFiles('vcpkg.json') }}
+          auto-update-conda: true
+          activate-environment: 3dfier
+          channels: conda-forge
+          channel-priority: strict
+
+      - name: Install dependencies
+        run: |
+          conda install -y -n 3dfier cmake ninja cgal gdal pdal boost yaml-cpp gmp mpfr eigen
 
       - name: Configure and build
         run: |
-          vcpkg install
-          cmake -S . -B build `
-            -DCMAKE_TOOLCHAIN_FILE="C:\vcpkg\scripts\buildsystems\vcpkg.cmake" `
-            -DVCPKG_TARGET_TRIPLET=x64-windows `
-            -DCMAKE_BUILD_TYPE=Release
-          cmake --build build --config Release --parallel 4
+          $env:CMAKE_PREFIX_PATH = "$env:CONDA_PREFIX\Library;$env:CONDA_PREFIX"
+          $env:BOOST_ROOT = "$env:CONDA_PREFIX\Library"
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build
 
       - name: Package
-        shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path dist\3dfier-windows-x64
-          Copy-Item build\Release\3dfier.exe dist\3dfier-windows-x64\
-          Copy-Item build\vcpkg_installed\x64-windows\bin\*.dll `
-            dist\3dfier-windows-x64\ -ErrorAction SilentlyContinue
-          Compress-Archive -Path dist\3dfier-windows-x64 -DestinationPath dist\3dfier-windows-x64.zip
+          $dst = "dist\3dfier-windows-x64"
+          New-Item -ItemType Directory -Force -Path $dst
+          Copy-Item build\3dfier.exe $dst\
+          Copy-Item "$env:CONDA_PREFIX\Library\bin\*.dll" $dst\ -ErrorAction SilentlyContinue
+          Copy-Item -Recurse "$env:CONDA_PREFIX\Library\share\gdal" $dst\ -ErrorAction SilentlyContinue
+          Copy-Item -Recurse "$env:CONDA_PREFIX\Library\share\proj" $dst\ -ErrorAction SilentlyContinue
+          $bat = @(
+            '@echo off',
+            'setlocal',
+            'set "BIN=%~dp0"',
+            'set "PATH=%BIN%;%PATH%"',
+            'set "GDAL_DATA=%BIN%gdal"',
+            'set "PROJ_LIB=%BIN%proj"',
+            'set "PDAL_DRIVER_PATH=%BIN%"',
+            '"%~dp03dfier.exe" %*'
+          )
+          Set-Content -Path "$dst\3dfier.bat" -Value $bat -Encoding ascii
+          Compress-Archive -Path $dst -DestinationPath dist\3dfier-windows-x64.zip
 
       - name: Smoke test
-        shell: pwsh
         run: |
-          & .\dist\3dfier-windows-x64\3dfier.exe --version
+          & .\dist\3dfier-windows-x64\3dfier.bat --version
 
       - uses: actions/upload-artifact@v4
         with:
