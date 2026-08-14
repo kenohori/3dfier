@@ -100,6 +100,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Update vcpkg
+        shell: pwsh
+        run: |
+          git -C C:\vcpkg fetch origin master --quiet
+          git -C C:\vcpkg reset --hard origin/master --quiet
+          C:\vcpkg\vcpkg.exe version
+
       - name: Configure and build
         run: |
           vcpkg install
