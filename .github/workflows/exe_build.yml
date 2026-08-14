@@ -112,18 +112,21 @@ jobs:
         run: |
           conda install -y -n 3dfier cmake ninja cgal gdal pdal boost yaml-cpp gmp mpfr eigen
 
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
       - name: Configure and build
         run: |
           $env:CMAKE_PREFIX_PATH = "$env:CONDA_PREFIX\Library;$env:CONDA_PREFIX"
           $env:BOOST_ROOT = "$env:CONDA_PREFIX\Library"
-          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release
-          cmake --build build --config Release --parallel 4
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build
 
       - name: Package
         run: |
           $dst = "dist\3dfier-windows-x64"
           New-Item -ItemType Directory -Force -Path $dst
-          Copy-Item build\Release\3dfier.exe $dst\
+          Copy-Item build\3dfier.exe $dst\
           Copy-Item "$env:CONDA_PREFIX\Library\bin\*.dll" $dst\ -ErrorAction SilentlyContinue
           Copy-Item -Recurse "$env:CONDA_PREFIX\Library\share\gdal" $dst\ -ErrorAction SilentlyContinue
           Copy-Item -Recurse "$env:CONDA_PREFIX\Library\share\proj" $dst\ -ErrorAction SilentlyContinue
