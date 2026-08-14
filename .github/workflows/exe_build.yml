@@ -61,7 +61,7 @@ jobs:
         include:
           - os: macos-14
             arch: arm64
-          - os: macos-13
+          - os: macos-15-intel
             arch: x86_64
     steps:
       - uses: actions/checkout@v4
@@ -83,7 +83,8 @@ jobs:
 
       - name: Smoke test
         run: |
-          dist/3dfier-*-macos/bin/3dfier --version
+          BIN=$(find dist -path '*macos/bin/3dfier' -type f | head -1)
+          "$BIN" --version
 
       - uses: actions/upload-artifact@v4
         with:
@@ -97,7 +98,7 @@ jobs:
       VCPKG_DEFAULT_TRIPLET: x64-windows
       VCPKG_INSTALLATION_ROOT: C:\vcpkg
       VCPKG_FEATURE_FLAGS: manifests
-      VCPKG_BINARY_SOURCES: clear;files,${{ runner.temp }}/vcpkg-archives,readwrite
+      VCPKG_CACHE_DIR: D:\a\_temp\vcpkg-archives
     steps:
       - uses: actions/checkout@v4
 
