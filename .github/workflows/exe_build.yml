@@ -97,7 +97,7 @@ jobs:
       VCPKG_DEFAULT_TRIPLET: x64-windows
       VCPKG_INSTALLATION_ROOT: C:\vcpkg
       VCPKG_FEATURE_FLAGS: manifests
-      VCPKG_BINARY_SOURCES: clear;files,%LOCALAPPDATA%\vcpkg\archives,readwrite
+      VCPKG_BINARY_SOURCES: clear;files,${{ runner.temp }}/vcpkg-archives,readwrite
     steps:
       - uses: actions/checkout@v4
 
@@ -111,7 +111,7 @@ jobs:
       - name: Cache vcpkg binaries
         uses: actions/cache@v4
         with:
-          path: ${{ env.LOCALAPPDATA }}\vcpkg\archives
+          path: ${{ runner.temp }}/vcpkg-archives
           key: vcpkg-${{ hashFiles('vcpkg.json') }}
 
       - name: Configure and build
