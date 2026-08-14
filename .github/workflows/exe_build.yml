@@ -97,6 +97,7 @@ jobs:
       VCPKG_DEFAULT_TRIPLET: x64-windows
       VCPKG_INSTALLATION_ROOT: C:\vcpkg
       VCPKG_FEATURE_FLAGS: manifests
+      VCPKG_BINARY_SOURCES: clear;files,%LOCALAPPDATA%\vcpkg\archives,readwrite
     steps:
       - uses: actions/checkout@v4
 
@@ -106,6 +107,12 @@ jobs:
           git -C C:\vcpkg fetch origin master --quiet
           git -C C:\vcpkg reset --hard origin/master --quiet
           C:\vcpkg\vcpkg.exe version
+
+      - name: Cache vcpkg binaries
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.LOCALAPPDATA }}\vcpkg\archives
+          key: vcpkg-${{ hashFiles('vcpkg.json') }}
 
       - name: Configure and build
         run: |
